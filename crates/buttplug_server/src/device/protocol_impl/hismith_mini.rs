@@ -79,13 +79,19 @@ const POSITION_FEATURE_SPRAY: u32 = 0;
 // and the stop flush) replaces a pending frame only with a newer frame of the same opcode, like the
 // app's per-opcode queue. Tagging only by feature would drop the first of the two stroke-window
 // frames (CC 08 + CC 07) that one depth command produces.
-fn cc_frame(feature_id: Uuid, op: u8, value: u8) -> HardwareCommand {
+//
+// `with_response`: the official app writes every CC frame with a plain writeCharacteristic, i.e.
+// write-with-response (ProductBaseControl.sendCommand), one frame per 50 ms. The servo S2 (the
+// two-slider layout) does the same here, so the machine acknowledges each frame instead of
+// receiving a stream it may drop or merge. Other CC machines keep write-without-response.
+// btleplug falls back to the other write type (with a warning) if the characteristic lacks one.
+fn cc_frame(feature_id: Uuid, op: u8, value: u8, with_response: bool) -> HardwareCommand {
   let command_id = Uuid::from_u128(feature_id.as_u128() ^ ((op as u128) << 64));
   HardwareWriteCmd::new(
     &[command_id],
     Endpoint::Tx,
     vec![0xCC, op, value, value.wrapping_add(op)],
-    false,
+    with_response,
   )
   .into()
 }
@@ -216,6 +222,11 @@ pub struct HismithMini {
 }
 
 impl HismithMini {
+  // CC frame with the write type this machine uses (see cc_frame).
+  fn cc(&self, feature_id: Uuid, op: u8, value: u8) -> HardwareCommand {
+    cc_frame(feature_id, op, value, self.depth_axis)
+  }
+
   // Slide the stroke window for a depth value 0..100. The two limits are written in the order that
   // keeps the window valid while it moves: deeper = end first, shallower = start first.
   fn depth_window(&self, feature_id: Uuid, depth: u32) -> Vec<HardwareCommand> {
@@ -248,7 +259,7 @@ impl HismithMini {
     }
     self.stroke_start.store(start, Ordering::Relaxed);
     self.stroke_end.store(end, Ordering::Relaxed);
-    let write = |op: u8, value: u8| cc_frame(feature_id, op, value);
+    let write = |op: u8, value: u8| self.cc(feature_id, op, value);
     if start >= old_start {
       vec![write(0x08, end), write(0x07, start)]
     } else {
@@ -270,14 +281,14 @@ impl HismithMini {
       position,
       position.wrapping_add(0x0A)
     );
-    vec![cc_frame(feature_id, 0x0A, position)]
+    vec![self.cc(feature_id, 0x0A, position)]
   }
 
   // The app's smoothness slider, 0..10 (CC 09). Applies in both run modes.
   fn smoothness(&self, feature_id: Uuid, level: u32) -> Vec<HardwareCommand> {
     let level = level.min(SMOOTHNESS_MAX) as u8;
     debug!("Hismith S2: smoothness {} -> CC 09 {:02X}", level, level);
-    vec![cc_frame(feature_id, 0x09, level)]
+    vec![self.cc(feature_id, 0x09, level)]
   }
 
   fn spray(&self, feature_id: Uuid, level: u32) -> Vec<HardwareCommand> {
@@ -320,7 +331,7 @@ impl ProtocolHandler for HismithMini {
     feature_id: Uuid,
     speed: u32,
   ) -> Result<Vec<HardwareCommand>, ButtplugDeviceError> {
-    Ok(vec![cc_frame(feature_id, 0x03, speed.min(100) as u8)])
+    Ok(vec![self.cc(feature_id, 0x03, speed.min(100) as u8)])
   }
 
   fn handle_output_vibrate_cmd(
@@ -446,7 +457,7 @@ impl ProtocolHandler for HismithMini {
     if feature_index == POSITION_FEATURE_RUN_MODE {
       let manual = position != 0;
       self.manual_mode.store(manual, Ordering::Relaxed);
-      return Ok(vec![cc_frame(feature_id, 0x01, if manual { 0xA1 } else { 0xA0 })]);
+      return Ok(vec![self.cc(feature_id, 0x01, if manual { 0xA1 } else { 0xA0 })]);
     }
     if feature_index == POSITION_FEATURE_PRESET_MODE && position == 0 {
       return Ok(vec![]);
@@ -471,7 +482,7 @@ impl ProtocolHandler for HismithMini {
       }
     };
 
-    Ok(vec![cc_frame(feature_id, idx, value)])
+    Ok(vec![self.cc(feature_id, idx, value)])
   }
 
   // Lube Launcher: any non-zero level squirts once. Level 0 (also what a Stop sends) does nothing.
@@ -839,6 +850,38 @@ mod test {
       1
     );
     assert!(!handler.manual_mode.load(Ordering::Relaxed));
+  }
+
+  fn with_response(cmds: &[HardwareCommand]) -> Vec<bool> {
+    cmds
+      .iter()
+      .map(|c| match c {
+        HardwareCommand::Write(w) => w.write_with_response(),
+        _ => panic!("expected a write command"),
+      })
+      .collect()
+  }
+
+  #[test]
+  fn s2_writes_every_cc_frame_with_response_like_the_app() {
+    let handler = depth_handler();
+    let id = Uuid::nil();
+    assert_eq!(with_response(&handler.handle_output_oscillate_cmd(0, id, 50).unwrap()), vec![true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(1, id, 50).unwrap()), vec![true, true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(2, id, 100).unwrap()), vec![true, true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(3, id, 1).unwrap()), vec![true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(4, id, 2).unwrap()), vec![true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(5, id, 70).unwrap()), vec![true]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(6, id, 3).unwrap()), vec![true]);
+  }
+
+  #[test]
+  fn other_cc_machines_keep_write_without_response() {
+    let handler = HismithMini::default();
+    let id = Uuid::nil();
+    assert_eq!(with_response(&handler.handle_output_oscillate_cmd(0, id, 50).unwrap()), vec![false]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(1, id, 20).unwrap()), vec![false]);
+    assert_eq!(with_response(&handler.handle_output_position_cmd(3, id, 50).unwrap()), vec![false]);
   }
 
   #[test]

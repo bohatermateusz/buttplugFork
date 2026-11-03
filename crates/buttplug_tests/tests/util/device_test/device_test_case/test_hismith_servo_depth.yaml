@@ -27,7 +27,7 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x03, 0x32, 0x35]
-            write_with_response: false
+            write_with_response: true
   - !Messages
       device_index: 0
       messages:
@@ -41,11 +41,11 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x08, 0x64, 0x6C]
-            write_with_response: false
+            write_with_response: true
         - !Write
             endpoint: tx
             data: [0xCC, 0x07, 0x3C, 0x43]
-            write_with_response: false
+            write_with_response: true
   - !Messages
       device_index: 0
       messages:
@@ -59,11 +59,11 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x07, 0x00, 0x07]
-            write_with_response: false
+            write_with_response: true
         - !Write
             endpoint: tx
             data: [0xCC, 0x08, 0x28, 0x30]
-            write_with_response: false
+            write_with_response: true
   - !Messages
       device_index: 0
       messages:
@@ -77,11 +77,11 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x08, 0x46, 0x4E]
-            write_with_response: false
+            write_with_response: true
         - !Write
             endpoint: tx
             data: [0xCC, 0x07, 0x1E, 0x25]
-            write_with_response: false
+            write_with_response: true
   # Stroke width (index 2, 10..100): 0.0 -> width 10; at depth 0.5 the window becomes 45..55
   # (start moves deeper, so the end is written first).
   - !Messages
@@ -97,11 +97,11 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x08, 0x37, 0x3F]
-            write_with_response: false
+            write_with_response: true
         - !Write
             endpoint: tx
             data: [0xCC, 0x07, 0x2D, 0x34]
-            write_with_response: false
+            write_with_response: true
   # Run mode (index 3): 1 = manual
   - !Messages
       device_index: 0
@@ -116,7 +116,7 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x01, 0xA1, 0xA2]
-            write_with_response: false
+            write_with_response: true
   # Preset mode (index 4, 0..8): 0.375 -> mode 3
   - !Messages
       device_index: 0
@@ -131,7 +131,7 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x04, 0x03, 0x07]
-            write_with_response: false
+            write_with_response: true
   # Stop only sets the speed to 0; the depth window is left alone, so exactly one frame is written.
   - !Messages
       device_index: 0
@@ -143,4 +143,4 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x03, 0x00, 0x03]
-            write_with_response: false
+            write_with_response: true

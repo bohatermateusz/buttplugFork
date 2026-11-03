@@ -40,6 +40,15 @@ each position in manual mode (100 followed the script best). The command is igno
 while the run mode is auto (the power-on mode and what this feature assumes after the engine
 starts), and it never switches the mode itself: send Run mode = 1 first.
 
+**Write type.** All CC frames of the S2 are written *with response*, as the official app does
+(`ProductBaseControl.sendCommand` uses a plain `writeCharacteristic`, one frame per 50 ms from a
+per-opcode queue). Until 2026-11-03 they went out without response; scripted manual-mode motion
+then showed irregular micro-jumps at every update rate tried (5-62 Hz). Other CC machines keep
+write-without-response. btleplug falls back (and logs a warning) if the characteristic supports
+only one write type, so look for "doesn't support write-with-response" in the engine log: if it is
+there, this change has no effect on that machine. During script playback only `CC 0A` changes, so a
+50 ms batch normally holds a single frame, like the app.
+
 The S2 definition sets `message_gap_ms: 50`: writes are batched every 50 ms and a newer frame of an
 opcode replaces a pending one of the same opcode (each opcode gets its own command id, so the two
 stroke-window frames of one depth command both stay). A 20 Hz position stream therefore never

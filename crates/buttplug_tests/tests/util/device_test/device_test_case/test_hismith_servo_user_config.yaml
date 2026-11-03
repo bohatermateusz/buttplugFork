@@ -27,4 +27,4 @@ device_commands:
         - !Write
             endpoint: tx
             data: [0xCC, 0x03, 0x14, 0x17]
-            write_with_response: false
+            write_with_response: true
