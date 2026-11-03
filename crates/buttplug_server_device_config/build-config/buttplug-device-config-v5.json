@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 5,
-    "minor": 67
+    "minor": 68
   },
   "protocols": {
     "activejoy": {
@@ -4712,12 +4712,26 @@
                   ]
                 }
               }
+            },
+            {
+              "description": "Position (move to depth now) - manual run mode only, 0 = shallow, 100 = deep, full travel",
+              "id": "97d0b560-b3d2-47cc-9fd3-5cf0f60f11e5",
+              "index": 5,
+              "output": {
+                "position": {
+                  "value": [
+                    0,
+                    100
+                  ]
+                }
+              }
             }
           ],
           "id": "330de697-9702-4bc7-89d6-3faf603f0238",
           "identifier": [
             "1101"
           ],
+          "message_gap_ms": 50,
           "name": "Hismith Servo Sex Machine"
         },
         {

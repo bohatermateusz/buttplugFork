@@ -28,6 +28,9 @@ configurations:
 - identifier:
   - '1101'
   name: Hismith Servo Sex Machine
+  # Batch writes like the official app (one CC frame per opcode per 50 ms): a 20 Hz position
+  # stream never queues up, only the newest pending value of each opcode is sent.
+  message_gap_ms: 50
   features:
   - description: Fucking Machine Oscillation Speed
     id: 6c2d8c56-4fbf-4578-bbe8-c40b97e9d313
@@ -69,6 +72,14 @@ configurations:
         - 0
         - 8
     index: 4
+  - description: Position (move to depth now) - manual run mode only, 0 = shallow, 100 = deep, full travel
+    id: 97d0b560-b3d2-47cc-9fd3-5cf0f60f11e5
+    output:
+      position:
+        value:
+        - 0
+        - 100
+    index: 5
   id: 330de697-9702-4bc7-89d6-3faf603f0238
 - identifier:
   - '1402'

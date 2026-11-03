@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 5,
-    "minor": 67
+    "minor": 68
   },
   "user_configs": {
     "protocols": {
@@ -74,6 +74,16 @@
             {
               "id": "8add44b6-7cb3-4ebe-87c0-91cb854124c5",
               "base_id": "694ff338-bd50-42a4-bfbb-b142cc33644d",
+              "output": {
+                "position": {
+                  "disabled": false,
+                  "reverse": false
+                }
+              }
+            },
+            {
+              "id": "5f0c7d0e-3b7a-4c55-9a43-0f3a1f6d2b85",
+              "base_id": "97d0b560-b3d2-47cc-9fd3-5cf0f60f11e5",
               "output": {
                 "position": {
                   "disabled": false,

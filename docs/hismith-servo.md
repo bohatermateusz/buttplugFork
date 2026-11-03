@@ -18,6 +18,23 @@ All frames are `CC <opcode> <value> <(opcode+value) & 0xFF>` written to characte
 | 2 | Stroke width (size of the depth window) | Position | 0-100, clamped to >= 10 | re-places the window |
 | 3 | Run mode (0 = auto, 1 = manual) | Position | 0-1 | `CC 01 A0` / `CC 01 A1` |
 | 4 | Preset mode (1-8, 0 = none) | Position | 0-8 | `CC 04 <n>` (0 sends nothing) |
+| 5 | Position (move to depth now) | Position | 0-100 | `CC 0A <pos>`, only in manual run mode |
+
+**Position (move to depth now), index 5.** This is the official app's manual mode: after
+`CC 01 A1` (manual) the app sends the position of its touch line as `CC 0A <0..100> <0A+pos>`,
+one frame per 50 ms (`ProductCCControl.writePosition` -> `writeCCData(10, i)`; the same opcode
+comes back on `ffe4` as the machine's current position). The value is sent as is: it is a position
+on the machine's full travel, 0 = shallow, 100 = deep, **not** relative to the depth/width window.
+Whether the firmware clamps it into the `CC 07`/`CC 08` window is not known yet (check on the
+machine; if it does, set width 100 before scripting). The command is ignored, without an error,
+while the run mode is auto (the power-on mode and what this feature assumes after the engine
+starts), and it never switches the mode itself: send Run mode = 1 first.
+
+The S2 definition sets `message_gap_ms: 50`: writes are batched every 50 ms and a newer frame of an
+opcode replaces a pending one of the same opcode (each opcode gets its own command id, so the two
+stroke-window frames of one depth command both stay). A 20 Hz position stream therefore never
+queues up. Stop writes only `CC 03 00 03` (speed 0) and flushes the batch, so at most the position
+that was already pending (< 50 ms old) still goes out; nothing is sent after it.
 
 Depth 0..100 slides a window of the current width along the machine's travel: with the default
 width 40, depth 0 -> 0..40, 50 -> 30..70, 100 -> 60..100; with width 10 and depth 100 the window is
@@ -29,7 +46,7 @@ Oscillate speed); a speed command leaves a preset mode (to be confirmed on hardw
 
 A definition with more than one Position feature besides this layout (the older seven-actuator
 user config: stroke start/end, position, smoothness, run mode, preset) keeps the raw per-opcode
-behaviour; the new layout is recognised by its Position feature count (1 or 4).
+behaviour; the new layout is recognised by its Position feature count (1, 4 or 5).
 
 ## Configuring speed and depth
 
@@ -72,19 +89,18 @@ MultiFunPlayer talks to Buttplug/Intiface with spec v3 (`Buttplug.Net`), so the 
 
 | Actuator type | Index | Function |
 |---|---|---|
-| Oscillate | 0 | Speed (`CC 03`) |
-| Position | 1 | Stroke Start (`CC 07`) |
-| Position | 2 | Stroke End (`CC 08`) |
-| Position | 3 | Position, move to depth now (`CC 0A`) |
-| Position | 4 | Smoothness (`CC 09`) |
+| Oscillate | 0 | Fucking Machine Oscillation Speed (`CC 03`) |
+| Position | 1 | Depth (stroke window, `CC 07` + `CC 08`) |
+| Position | 2 | Stroke width |
+| Position | 3 | Run mode (0 auto, 1 manual, `CC 01 A0/A1`) |
+| Position | 4 | Preset mode (`CC 04`) |
+| Position | 5 | Position (move to depth now) (`CC 0A`, manual mode only) |
 
 (The index is the position in the device's scalar list, which is what MultiFunPlayer shows.)
-This path is covered by the test `test_hismith_servo_depth.yaml`, which sends exactly these v3
-`ScalarCmd` messages.
 
-Suggested mapping in the Buttplug.io output target: stroke axis `L0` -> `Position/3` for scripted
-depth; use `Position/1` and `Position/2` for the stroke window and `Position/4` for smoothness
-only if you want to drive them from an axis. The "Stop" that MultiFunPlayer sends only sets speed
+Scripted depth (funscript `L0`): set Run mode (`Position/3`) to 1, then map `L0` -> `Position/5`.
+Without manual mode `Position/5` does nothing. For auto-mode play use `Oscillate/0` for speed and
+`Position/1`/`Position/2` for the depth window. The "Stop" that MultiFunPlayer sends only sets speed
 to 0 (`CC 03 00 03`); Position features are deliberately left where they are.
 
 Stock MultiFunPlayer lists only the type and index, so the four Position actuators are hard to
@@ -111,8 +127,11 @@ The Lube Launcher 2.0 is the app's "Hismith PiuPiu" (BLE name `Hismith Piupiu`).
 
 ```
 cargo build --release -p intiface-engine
-target/release/intiface-engine --websocket-port 12345 --use-bluetooth-le --log info
+target/release/intiface-engine --websocket-port 12345 --websocket-use-all-interfaces --use-bluetooth-le --log info
 ```
+
+`--log debug` additionally prints every direct position frame (`Hismith S2: direct position ...`)
+and each position ignored in auto mode.
 
 MultiFunPlayer (Buttplug.io output, endpoint 127.0.0.1:12345) connects to it like to Intiface
 Central. `tools/e2e/` has a hardware-free check and a fake S2 for testing clients; see its README.

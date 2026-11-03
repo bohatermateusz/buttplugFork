@@ -99,7 +99,35 @@ async def run_s2(c, dev, frames_path):
         got = [h for _, h in await settle(frames_path, before)]
         results.append((label, expected, got))
 
-    # Two-slider layout: 0 speed (Oscillate), 1 depth, 2 stroke width (0..100, minimum 10), 3 run mode, 4 preset mode.
+    async def stream_20hz():
+        # What MultiFunPlayer does with a script on L0: one ScalarCmd every 50 ms. Only the last
+        # value is checked; with message_gap_ms batching nothing may queue up behind it.
+        before = len(read_frames(frames_path))
+        values = [round(0.5 + 0.4 * ((i % 20) - 10) / 10, 2) for i in range(60)] + [0.9]
+        t0 = time.monotonic()
+        for i, v in enumerate(values):
+            await c.scalar(idx, 5, v, "Position")
+            await asyncio.sleep(max(0.0, t0 + (i + 1) * 0.05 - time.monotonic()))
+        last = f"CC 0A {round(values[-1] * 100):02X} {round(values[-1] * 100) + 0x0A:02X}"
+        sent_at = time.monotonic()
+        lag = None
+        while time.monotonic() - sent_at < 1.0:
+            got = [h for _, h in read_frames(frames_path)[before:]]
+            if got and got[-1] == last:
+                lag = time.monotonic() - sent_at
+                break
+            await asyncio.sleep(0.01)
+        got = [h for _, h in read_frames(frames_path)[before:]]
+        ok = lag is not None and lag < 0.2 and len(got) <= len(values) and all(h.startswith("CC 0A") for h in got)
+        lag_txt = f"{lag * 1000:.0f} ms" if lag is not None else "never"
+        results.append((f"20 Hz position stream, {len(values)} values: last frame {last}, {len(got)} frames, lag {lag_txt}",
+                        ["ok"], ["ok"] if ok else [f"lag {lag_txt}", f"{len(got)} frames", *got[-3:]]))
+
+    # Two-slider layout: 0 speed (Oscillate), 1 depth, 2 stroke width (0..100, minimum 10), 3 run mode, 4 preset mode,
+    # 5 "Position (move to depth now)" (CC 0A, manual run mode only).
+    direct = next((i for i, a in enumerate(actuators) if a["FeatureDescriptor"].lower().startswith("position (move to depth now)")), None)
+    results.append(("Position/5 is 'Position (move to depth now)'", [5], [direct]))
+    await step("direct position 0.3 in auto mode (ignored)", lambda: c.scalar(idx, 5, 0.3, "Position"), [])
     # Speed 50 % (step count 100) -> CC 03 32 35
     await step("speed 0.5", lambda: c.scalar(idx, 0, 0.5, "Oscillate"), ["CC 03 32 35"])
     await step("depth 1.0 (window 60..100, end first)", lambda: c.scalar(idx, 1, 1.0, "Position"), ["CC 08 64 6C", "CC 07 3C 43"])
@@ -109,7 +137,12 @@ async def run_s2(c, dev, frames_path):
     await step("width 40 again (window 0..40)", lambda: c.scalar(idx, 2, 0.4, "Position"), ["CC 08 28 30", "CC 07 00 07"])
     await step("depth 0.5 at width 40 (window 30..70)", lambda: c.scalar(idx, 1, 0.5, "Position"), ["CC 08 46 4E", "CC 07 1E 25"])
     await step("run mode manual", lambda: c.scalar(idx, 3, 1.0, "Position"), ["CC 01 A1 A2"])
+    await step("direct position 0.7 (manual)", lambda: c.scalar(idx, 5, 0.7, "Position"), ["CC 0A 46 50"])
+    await step("direct position 0.3 (manual)", lambda: c.scalar(idx, 5, 0.3, "Position"), ["CC 0A 1E 28"])
+    await step("direct position 0.7 again (manual)", lambda: c.scalar(idx, 5, 0.7, "Position"), ["CC 0A 46 50"])
+    await stream_20hz()
     await step("run mode auto", lambda: c.scalar(idx, 3, 0.0, "Position"), ["CC 01 A0 A1"])
+    await step("direct position 0.2 in auto mode (ignored)", lambda: c.scalar(idx, 5, 0.2, "Position"), [])
     await step("preset mode 3 (3/8)", lambda: c.scalar(idx, 4, 3 / PRESET_MODE_MAX, "Position"), ["CC 04 03 07"])
     await step("preset mode 3 again (server de-dupes identical commands)", lambda: c.scalar(idx, 4, 3 / PRESET_MODE_MAX, "Position"), [])
     await step("preset mode 0 (sends nothing)", lambda: c.scalar(idx, 4, 0.0, "Position"), [])

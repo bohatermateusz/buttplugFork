@@ -1,9 +1,10 @@
 # End-to-end check without hardware
 
-> The stock HISMITH S2 definition has five features: speed (Oscillate, index 0), depth (Position,
+> The stock HISMITH S2 definition has six features: speed (Oscillate, index 0), depth (Position,
 > 1; 0..100 slides a stroke window), stroke width (Position, 2; clamped to a minimum of 10), run
-> mode (Position, 3; 0 auto / 1 manual) and preset mode (Position, 4; 0..8). `v3_client_check.py`
-> checks exactly these.
+> mode (Position, 3; 0 auto / 1 manual), preset mode (Position, 4; 0..8) and "Position (move to
+> depth now)" (Position, 5; `CC 0A`, manual mode only). `v3_client_check.py` checks exactly these,
+> including a 20 Hz position stream (last value must arrive within 200 ms, nothing queues up).
 
 `run_e2e.sh` builds `intiface_engine` from this fork, starts it with the **websocket device**
 hardware manager, connects a fake HISMITH S2 (then a fake Lube Launcher) to it, and drives the

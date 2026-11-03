@@ -47,10 +47,15 @@ const MIN_STROKE_GAP: u8 = 10;
 // end, 100 = deep end): 0 -> 0..40, 50 -> 30..70, 100 -> 60..100.
 //
 // The two-slider S2 can also carry "stroke width" (index 2, window size 0-100, clamped to 10), "run mode"
-// (index 3) and "preset mode" (index 4); the layout is recognised by its Position feature count
-// (1 or 4) and uses fixed indices, see handle_output_position_cmd.
+// (index 3), "preset mode" (index 4) and "Position (move to depth now)" (index 5); the layout is
+// recognised by its Position feature count (1, 4 or 5) and uses fixed indices, see
+// handle_output_position_cmd.
 const POSITION_FEATURE_DEPTH: u32 = 1;
 const POSITION_FEATURE_WIDTH: u32 = 2;
+// Two-slider layout, index 5: the official app's manual mode. After CC 01 A1 (manual) the app sends
+// the position of its touch line as CC 0A <0..100> (ProductCCControl.writePosition ->
+// writeCCData(10, i)), one frame per 50 ms. Only honoured while run mode is manual.
+const POSITION_FEATURE_DIRECT_TWO_SLIDER: u32 = 5;
 const DEPTH_WINDOW_WIDTH: u8 = 40;
 // Same minimum as MIN_STROKE_GAP: the official app never lets the window get narrower.
 const MIN_WINDOW_WIDTH: u8 = 10;
@@ -63,6 +68,22 @@ const SPRAY_MIN_INTERVAL: Duration = Duration::from_millis(100);
 // On the PiuPiu, the Position feature at index 0 is the spray trigger. (Servo machines use
 // index 0 for speed, which is not a Position feature.)
 const POSITION_FEATURE_SPRAY: u32 = 0;
+
+// One CC frame `CC <op> <value> <op+value>`. The write is tagged with a command id derived from
+// the feature and the opcode, so that the device task's de-duplication (message_gap_ms batching
+// and the stop flush) replaces a pending frame only with a newer frame of the same opcode, like the
+// app's per-opcode queue. Tagging only by feature would drop the first of the two stroke-window
+// frames (CC 08 + CC 07) that one depth command produces.
+fn cc_frame(feature_id: Uuid, op: u8, value: u8) -> HardwareCommand {
+  let command_id = Uuid::from_u128(feature_id.as_u128() ^ ((op as u128) << 64));
+  HardwareWriteCmd::new(
+    &[command_id],
+    Endpoint::Tx,
+    vec![0xCC, op, value, value.wrapping_add(op)],
+    false,
+  )
+  .into()
+}
 
 pub mod setup {
   use crate::device::protocol::{ProtocolIdentifier, ProtocolIdentifierFactory};
@@ -138,8 +159,9 @@ impl ProtocolInitializer for HismithMiniInitializer {
     Ok(Arc::new(HismithMini {
       stroke_start: AtomicU8::new(0),
       stroke_end: AtomicU8::new(100),
-      depth_axis: has_oscillate && (position_features == 1 || position_features == 4),
+      depth_axis: has_oscillate && matches!(position_features, 1 | 4 | 5),
       depth_sent: AtomicBool::new(false),
+      manual_mode: AtomicBool::new(false),
       window_width: AtomicU8::new(DEPTH_WINDOW_WIDTH),
       depth_value: AtomicU8::new(0),
       last_spray: Mutex::new(None),
@@ -175,6 +197,9 @@ pub struct HismithMini {
   // width change can re-place the window.
   window_width: AtomicU8,
   depth_value: AtomicU8,
+  // Last run mode we sent (false = auto, the machine's power-on mode). The direct position only
+  // works in manual mode; it never switches the mode itself.
+  manual_mode: AtomicBool,
   last_spray: Mutex<Option<Instant>>,
 }
 
@@ -211,20 +236,29 @@ impl HismithMini {
     }
     self.stroke_start.store(start, Ordering::Relaxed);
     self.stroke_end.store(end, Ordering::Relaxed);
-    let write = |op: u8, value: u8| -> HardwareCommand {
-      HardwareWriteCmd::new(
-        &[feature_id],
-        Endpoint::Tx,
-        vec![0xCC, op, value, value + op],
-        false,
-      )
-      .into()
-    };
+    let write = |op: u8, value: u8| cc_frame(feature_id, op, value);
     if start >= old_start {
       vec![write(0x08, end), write(0x07, start)]
     } else {
       vec![write(0x07, start), write(0x08, end)]
     }
+  }
+
+  // Manual-mode position 0..100 (0 = shallow, 100 = deep, sent as is like the app does). Ignored
+  // without an error while the run mode is auto.
+  fn direct_position(&self, feature_id: Uuid, position: u32) -> Vec<HardwareCommand> {
+    let position = position.min(100) as u8;
+    if !self.manual_mode.load(Ordering::Relaxed) {
+      debug!("Hismith S2: direct position {} ignored, run mode is auto", position);
+      return vec![];
+    }
+    debug!(
+      "Hismith S2: direct position {} -> CC 0A {:02X} {:02X}",
+      position,
+      position,
+      position.wrapping_add(0x0A)
+    );
+    vec![cc_frame(feature_id, 0x0A, position)]
   }
 
   fn spray(&self, feature_id: Uuid, level: u32) -> Vec<HardwareCommand> {
@@ -254,6 +288,7 @@ impl Default for HismithMini {
       depth_sent: AtomicBool::new(false),
       window_width: AtomicU8::new(DEPTH_WINDOW_WIDTH),
       depth_value: AtomicU8::new(0),
+      manual_mode: AtomicBool::new(false),
       last_spray: Mutex::new(None),
     }
   }
@@ -266,18 +301,7 @@ impl ProtocolHandler for HismithMini {
     feature_id: Uuid,
     speed: u32,
   ) -> Result<Vec<HardwareCommand>, ButtplugDeviceError> {
-    let idx: u8 = 0x03;
-    let speed: u8 = speed as u8;
-
-    Ok(vec![
-      HardwareWriteCmd::new(
-        &[feature_id],
-        Endpoint::Tx,
-        vec![0xCC, idx, speed, speed + idx],
-        false,
-      )
-      .into(),
-    ])
+    Ok(vec![cc_frame(feature_id, 0x03, speed.min(100) as u8)])
   }
 
   fn handle_output_vibrate_cmd(
@@ -368,6 +392,8 @@ impl ProtocolHandler for HismithMini {
   //              the direct position)
   //   index 6 -> built-in preset mode 1-8, 0x04 (0 sends nothing; a speed command leaves the mode)
   // The stroke window is kept at least MIN_STROKE_GAP wide, as the official app does.
+  // The two-slider S2 layout (depth_axis) uses its own indices instead: 1 depth, 2 stroke width,
+  // 3 run mode, 4 preset mode, 5 "Position (move to depth now)" (0x0A, manual mode only).
   fn handle_output_position_cmd(
     &self,
     feature_index: u32,
@@ -383,6 +409,9 @@ impl ProtocolHandler for HismithMini {
     if self.depth_axis && feature_index == POSITION_FEATURE_WIDTH {
       return Ok(self.window_width_cmd(feature_id, position));
     }
+    if self.depth_axis && feature_index == POSITION_FEATURE_DIRECT_TWO_SLIDER {
+      return Ok(self.direct_position(feature_id, position));
+    }
     // two-slider layout: index 3 = run mode, index 4 = preset mode
     let feature_index = match (self.depth_axis, feature_index) {
       (true, 3) => POSITION_FEATURE_RUN_MODE,
@@ -392,16 +421,9 @@ impl ProtocolHandler for HismithMini {
 
     // The run mode command is the only one with a fixed value pair: CC 01 A0 / CC 01 A1.
     if feature_index == POSITION_FEATURE_RUN_MODE {
-      let mode: u8 = if position == 0 { 0xA0 } else { 0xA1 };
-      return Ok(vec![
-        HardwareWriteCmd::new(
-          &[feature_id],
-          Endpoint::Tx,
-          vec![0xCC, 0x01, mode, mode + 1],
-          false,
-        )
-        .into(),
-      ]);
+      let manual = position != 0;
+      self.manual_mode.store(manual, Ordering::Relaxed);
+      return Ok(vec![cc_frame(feature_id, 0x01, if manual { 0xA1 } else { 0xA0 })]);
     }
     if feature_index == POSITION_FEATURE_PRESET_MODE && position == 0 {
       return Ok(vec![]);
@@ -426,15 +448,7 @@ impl ProtocolHandler for HismithMini {
       }
     };
 
-    Ok(vec![
-      HardwareWriteCmd::new(
-        &[feature_id],
-        Endpoint::Tx,
-        vec![0xCC, idx, value, value + idx],
-        false,
-      )
-      .into(),
-    ])
+    Ok(vec![cc_frame(feature_id, idx, value)])
   }
 
   // Lube Launcher: any non-zero level squirts once. Level 0 (also what a Stop sends) does nothing.
@@ -742,6 +756,60 @@ mod test {
       vec![0xCC, 0x04, 0x03, 0x07]
     );
     assert!(handler.handle_output_position_cmd(4, Uuid::nil(), 0).unwrap().is_empty());
+  }
+
+  #[test]
+  fn direct_position_is_ignored_in_auto_mode() {
+    let handler = depth_handler();
+    // power-on mode is auto: nothing is sent and no error
+    assert!(handler.handle_output_position_cmd(5, Uuid::nil(), 30).unwrap().is_empty());
+    handler.handle_output_position_cmd(3, Uuid::nil(), 1).unwrap();
+    handler.handle_output_position_cmd(3, Uuid::nil(), 0).unwrap();
+    assert!(handler.handle_output_position_cmd(5, Uuid::nil(), 70).unwrap().is_empty());
+  }
+
+  #[test]
+  fn direct_position_in_manual_mode_sends_cc_0a() {
+    let handler = depth_handler();
+    assert_eq!(
+      written(handler.handle_output_position_cmd(3, Uuid::nil(), 1).unwrap()),
+      vec![0xCC, 0x01, 0xA1, 0xA2]
+    );
+    assert_eq!(
+      written(handler.handle_output_position_cmd(5, Uuid::nil(), 30).unwrap()),
+      vec![0xCC, 0x0A, 0x1E, 0x28]
+    );
+    assert_eq!(
+      written(handler.handle_output_position_cmd(5, Uuid::nil(), 70).unwrap()),
+      vec![0xCC, 0x0A, 0x46, 0x50]
+    );
+    // out of range is clamped, never a panic
+    assert_eq!(
+      written(handler.handle_output_position_cmd(5, Uuid::nil(), u32::MAX).unwrap()),
+      vec![0xCC, 0x0A, 0x64, 0x6E]
+    );
+  }
+
+  #[test]
+  fn direct_position_does_not_switch_run_mode() {
+    let handler = depth_handler();
+    handler.handle_output_position_cmd(5, Uuid::nil(), 50).unwrap();
+    assert!(!handler.manual_mode.load(Ordering::Relaxed));
+  }
+
+  #[test]
+  fn frames_of_one_opcode_replace_each_other_but_not_other_opcodes() {
+    let handler = depth_handler();
+    let id = Uuid::new_v4();
+    let pair = handler.handle_output_position_cmd(1, id, 100).unwrap();
+    // the two stroke-window frames must both survive de-duplication
+    assert!(!pair[0].overlaps(&pair[1]));
+    handler.handle_output_position_cmd(3, id, 1).unwrap();
+    let a = handler.handle_output_position_cmd(5, id, 30).unwrap();
+    let b = handler.handle_output_position_cmd(5, id, 70).unwrap();
+    assert!(a[0].overlaps(&b[0]));
+    let speed = handler.handle_output_oscillate_cmd(0, id, 50).unwrap();
+    assert!(!speed[0].overlaps(&a[0]));
   }
 
   #[test]
