@@ -124,9 +124,11 @@ async def run_s2(c, dev, frames_path):
                         ["ok"], ["ok"] if ok else [f"lag {lag_txt}", f"{len(got)} frames", *got[-3:]]))
 
     # Two-slider layout: 0 speed (Oscillate), 1 depth, 2 stroke width (0..100, minimum 10), 3 run mode, 4 preset mode,
-    # 5 "Position (move to depth now)" (CC 0A, manual run mode only).
+    # 5 "Position (move to depth now)" (CC 0A, manual run mode only), 6 smoothness (CC 09, 0..10).
     direct = next((i for i, a in enumerate(actuators) if a["FeatureDescriptor"].lower().startswith("position (move to depth now)")), None)
     results.append(("Position/5 is 'Position (move to depth now)'", [5], [direct]))
+    smooth = next((i for i, a in enumerate(actuators) if a["FeatureDescriptor"].lower().startswith("smoothness")), None)
+    results.append(("Position/6 is 'Smoothness'", [6], [smooth]))
     await step("direct position 0.3 in auto mode (ignored)", lambda: c.scalar(idx, 5, 0.3, "Position"), [])
     # Speed 50 % (step count 100) -> CC 03 32 35
     await step("speed 0.5", lambda: c.scalar(idx, 0, 0.5, "Oscillate"), ["CC 03 32 35"])
@@ -136,6 +138,9 @@ async def run_s2(c, dev, frames_path):
     await step("width 100 at depth 0 (window 0..100)", lambda: c.scalar(idx, 2, 1.0, "Position"), ["CC 08 64 6C", "CC 07 00 07"])
     await step("width 40 again (window 0..40)", lambda: c.scalar(idx, 2, 0.4, "Position"), ["CC 08 28 30", "CC 07 00 07"])
     await step("depth 0.5 at width 40 (window 30..70)", lambda: c.scalar(idx, 1, 0.5, "Position"), ["CC 08 46 4E", "CC 07 1E 25"])
+    # Smoothness 0..10 (step count 10): 0.7 -> CC 09 07 10, 1.0 -> CC 09 0A 13
+    await step("smoothness 0.7", lambda: c.scalar(idx, 6, 0.7, "Position"), ["CC 09 07 10"])
+    await step("smoothness 1.0", lambda: c.scalar(idx, 6, 1.0, "Position"), ["CC 09 0A 13"])
     await step("run mode manual", lambda: c.scalar(idx, 3, 1.0, "Position"), ["CC 01 A1 A2"])
     await step("direct position 0.7 (manual)", lambda: c.scalar(idx, 5, 0.7, "Position"), ["CC 0A 46 50"])
     await step("direct position 0.3 (manual)", lambda: c.scalar(idx, 5, 0.3, "Position"), ["CC 0A 1E 28"])

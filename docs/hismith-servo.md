@@ -19,6 +19,13 @@ All frames are `CC <opcode> <value> <(opcode+value) & 0xFF>` written to characte
 | 3 | Run mode (0 = auto, 1 = manual) | Position | 0-1 | `CC 01 A0` / `CC 01 A1` |
 | 4 | Preset mode (1-8, 0 = none) | Position | 0-8 | `CC 04 <n>` (0 sends nothing) |
 | 5 | Position (move to depth now) | Position | 0-100 | `CC 0A <pos>`, only in manual run mode |
+| 6 | Smoothness | Position | 0-10 | `CC 09 <n>` (the app's smoothness slider) |
+
+**Smoothness, index 6.** The app's smoothness slider, `CC 09 <0..10> <09+n>`, the same opcode as the
+raw layout's smoothness feature. Sent in both run modes. Its effect on manual-mode following is
+not measured yet: on 2026-11-03 the S2 "slid" past both ends of long scripted strokes (more within a
+15 s run, independent of stroke speed and of keeping the stroke away from the ends), and the
+machine's default smoothness is the main suspect. Try 0, 5 and 10 on a long slow stroke.
 
 **Position (move to depth now), index 5.** This is the official app's manual mode: after
 `CC 01 A1` (manual) the app sends the position of its touch line as `CC 0A <0..100> <0A+pos>`,
@@ -26,7 +33,10 @@ one frame per 50 ms (`ProductCCControl.writePosition` -> `writeCCData(10, i)`; t
 comes back on `ffe4` as the machine's current position). The value is sent as is: it is a position
 on the machine's full travel, 0 = shallow, 100 = deep, **not** relative to the depth/width window.
 Whether the firmware clamps it into the `CC 07`/`CC 08` window is not known yet (check on the
-machine; if it does, set width 100 before scripting). The command is ignored, without an error,
+machine; if it does, set width 100 before scripting). Measured on 2026-11-03: it does. With the
+default width 40 the scripted stroke covered only a part of the travel; width 100 and depth 50
+(window 0..100) gave full travel. The speed (`CC 03`) also changes how fast the machine moves to
+each position in manual mode (100 followed the script best). The command is ignored, without an error,
 while the run mode is auto (the power-on mode and what this feature assumes after the engine
 starts), and it never switches the mode itself: send Run mode = 1 first.
 
@@ -46,7 +56,8 @@ Oscillate speed); a speed command leaves a preset mode (to be confirmed on hardw
 
 A definition with more than one Position feature besides this layout (the older seven-actuator
 user config: stroke start/end, position, smoothness, run mode, preset) keeps the raw per-opcode
-behaviour; the new layout is recognised by its Position feature count (1, 4 or 5).
+behaviour; the new layout is recognised by its Position feature count (1, 4 or 5, or 6 when the
+feature at index 1 is described as "Depth", which tells it apart from the raw six-feature layout).
 
 ## Configuring speed and depth
 
@@ -95,6 +106,7 @@ MultiFunPlayer talks to Buttplug/Intiface with spec v3 (`Buttplug.Net`), so the 
 | Position | 3 | Run mode (0 auto, 1 manual, `CC 01 A0/A1`) |
 | Position | 4 | Preset mode (`CC 04`) |
 | Position | 5 | Position (move to depth now) (`CC 0A`, manual mode only) |
+| Position | 6 | Smoothness (`CC 09`, 0-10) |
 
 (The index is the position in the device's scalar list, which is what MultiFunPlayer shows.)
 

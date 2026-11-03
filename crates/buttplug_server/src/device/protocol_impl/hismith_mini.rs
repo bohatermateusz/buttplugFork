@@ -47,15 +47,20 @@ const MIN_STROKE_GAP: u8 = 10;
 // end, 100 = deep end): 0 -> 0..40, 50 -> 30..70, 100 -> 60..100.
 //
 // The two-slider S2 can also carry "stroke width" (index 2, window size 0-100, clamped to 10), "run mode"
-// (index 3), "preset mode" (index 4) and "Position (move to depth now)" (index 5); the layout is
-// recognised by its Position feature count (1, 4 or 5) and uses fixed indices, see
-// handle_output_position_cmd.
+// (index 3), "preset mode" (index 4), "Position (move to depth now)" (index 5) and "smoothness"
+// (index 6); the layout is recognised by its Position feature count (1, 4, 5, or 6 with a "Depth"
+// feature at index 1, which tells it apart from the raw six-feature layout) and uses fixed indices,
+// see handle_output_position_cmd.
 const POSITION_FEATURE_DEPTH: u32 = 1;
 const POSITION_FEATURE_WIDTH: u32 = 2;
 // Two-slider layout, index 5: the official app's manual mode. After CC 01 A1 (manual) the app sends
 // the position of its touch line as CC 0A <0..100> (ProductCCControl.writePosition ->
 // writeCCData(10, i)), one frame per 50 ms. Only honoured while run mode is manual.
 const POSITION_FEATURE_DIRECT_TWO_SLIDER: u32 = 5;
+// Two-slider layout, index 6: the app's smoothness slider, CC 09 <0..10> (same opcode as
+// POSITION_FEATURE_SMOOTHNESS of the raw layout).
+const POSITION_FEATURE_SMOOTHNESS_TWO_SLIDER: u32 = 6;
+const SMOOTHNESS_MAX: u32 = 10;
 const DEPTH_WINDOW_WIDTH: u8 = 40;
 // Same minimum as MIN_STROKE_GAP: the official app never lets the window get narrower.
 const MIN_WINDOW_WIDTH: u8 = 10;
@@ -156,10 +161,17 @@ impl ProtocolInitializer for HismithMiniInitializer {
       .features()
       .values()
       .any(|x| x.contains_output(OutputType::Oscillate));
+    // Six Position features is also the raw layout (start, end, direct, smoothness, run, preset);
+    // the two-slider one has its "Depth" slider at index 1.
+    let depth_at_index_1 = device_definition
+      .features()
+      .get(&POSITION_FEATURE_DEPTH)
+      .is_some_and(|f| f.description.starts_with("Depth"));
     Ok(Arc::new(HismithMini {
       stroke_start: AtomicU8::new(0),
       stroke_end: AtomicU8::new(100),
-      depth_axis: has_oscillate && matches!(position_features, 1 | 4 | 5),
+      depth_axis: has_oscillate
+        && (matches!(position_features, 1 | 4 | 5) || (position_features == 6 && depth_at_index_1)),
       depth_sent: AtomicBool::new(false),
       manual_mode: AtomicBool::new(false),
       window_width: AtomicU8::new(DEPTH_WINDOW_WIDTH),
@@ -259,6 +271,13 @@ impl HismithMini {
       position.wrapping_add(0x0A)
     );
     vec![cc_frame(feature_id, 0x0A, position)]
+  }
+
+  // The app's smoothness slider, 0..10 (CC 09). Applies in both run modes.
+  fn smoothness(&self, feature_id: Uuid, level: u32) -> Vec<HardwareCommand> {
+    let level = level.min(SMOOTHNESS_MAX) as u8;
+    debug!("Hismith S2: smoothness {} -> CC 09 {:02X}", level, level);
+    vec![cc_frame(feature_id, 0x09, level)]
   }
 
   fn spray(&self, feature_id: Uuid, level: u32) -> Vec<HardwareCommand> {
@@ -393,7 +412,8 @@ impl ProtocolHandler for HismithMini {
   //   index 6 -> built-in preset mode 1-8, 0x04 (0 sends nothing; a speed command leaves the mode)
   // The stroke window is kept at least MIN_STROKE_GAP wide, as the official app does.
   // The two-slider S2 layout (depth_axis) uses its own indices instead: 1 depth, 2 stroke width,
-  // 3 run mode, 4 preset mode, 5 "Position (move to depth now)" (0x0A, manual mode only).
+  // 3 run mode, 4 preset mode, 5 "Position (move to depth now)" (0x0A, manual mode only),
+  // 6 smoothness (0x09, 0-10).
   fn handle_output_position_cmd(
     &self,
     feature_index: u32,
@@ -411,6 +431,9 @@ impl ProtocolHandler for HismithMini {
     }
     if self.depth_axis && feature_index == POSITION_FEATURE_DIRECT_TWO_SLIDER {
       return Ok(self.direct_position(feature_id, position));
+    }
+    if self.depth_axis && feature_index == POSITION_FEATURE_SMOOTHNESS_TWO_SLIDER {
+      return Ok(self.smoothness(feature_id, position));
     }
     // two-slider layout: index 3 = run mode, index 4 = preset mode
     let feature_index = match (self.depth_axis, feature_index) {
@@ -788,6 +811,34 @@ mod test {
       written(handler.handle_output_position_cmd(5, Uuid::nil(), u32::MAX).unwrap()),
       vec![0xCC, 0x0A, 0x64, 0x6E]
     );
+  }
+
+  #[test]
+  fn two_slider_smoothness_uses_opcode_09_at_index_6() {
+    let handler = depth_handler();
+    assert_eq!(
+      written(handler.handle_output_position_cmd(6, Uuid::nil(), 0).unwrap()),
+      vec![0xCC, 0x09, 0x00, 0x09]
+    );
+    assert_eq!(
+      written(handler.handle_output_position_cmd(6, Uuid::nil(), 7).unwrap()),
+      vec![0xCC, 0x09, 0x07, 0x10]
+    );
+    // clamped to the app's 0-10, never a panic
+    assert_eq!(
+      written(handler.handle_output_position_cmd(6, Uuid::nil(), u32::MAX).unwrap()),
+      vec![0xCC, 0x09, 0x0A, 0x13]
+    );
+  }
+
+  #[test]
+  fn two_slider_smoothness_works_in_auto_mode_and_keeps_run_mode() {
+    let handler = depth_handler();
+    assert_eq!(
+      handler.handle_output_position_cmd(6, Uuid::nil(), 5).unwrap().len(),
+      1
+    );
+    assert!(!handler.manual_mode.load(Ordering::Relaxed));
   }
 
   #[test]

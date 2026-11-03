@@ -80,6 +80,14 @@ configurations:
         - 0
         - 100
     index: 5
+  - description: Smoothness (0-10, the app's smoothness slider, CC 09)
+    id: 5d7c1e3a-8b2f-4e6d-9a41-3c0f7b2e9d56
+    output:
+      position:
+        value:
+        - 0
+        - 10
+    index: 6
   id: 330de697-9702-4bc7-89d6-3faf603f0238
 - identifier:
   - '1402'
